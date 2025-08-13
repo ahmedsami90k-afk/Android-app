@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no"
+/>
+<title>Daggerfall Lite — Mobile</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0b0e13;}
+  #gameCanvas{width:100vw;height:100vh;display:block;touch-action:none;}
+
+  /* HUD */
+  #hotbar{position:fixed;top:50%;left:10px;transform:translateY(-50%);
+    display:flex;flex-direction:column;gap:8px;pointer-events:none;z-index:5}
+  .hot{pointer-events:auto;width:54px;height:54px;border-radius:10px;
+    background:rgba(255,255,255,.1);color:#fff;font-family:monospace;
+    display:flex;align-items:center;justify-content:center;font-weight:bold}
+  .hot.active{background:rgba(255,255,255,.35)}
+  #uiButtons{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
+    width:360px;display:flex;justify-content:space-between;pointer-events:none;z-index:5}
+  .btn{pointer-events:auto;width:64px;height:64px;border-radius:14px;
+    background:rgba(255,255,255,.12);color:#fff;font-family:monospace;
+    display:flex;align-items:center;justify-content:center;font-size:22px;
+    font-weight:bold;user-select:none}
+  .btn:active{background:rgba(255,255,255,.3)}
+  #healthBar{position:fixed;top:10px;left:50%;transform:translateX(-50%);
+    width:220px;height:20px;border:2px solid #fff;background:#1b1f27;border-radius:8px;z-index:5}
+  #healthFill{width:100%;height:100%;background:#e74c3c;border-radius:6px}
+  #npcDialog{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);
+    width:320px;padding:10px 12px;background:rgba(0,0,0,.7);color:#fff;font-family:monospace;
+    display:none;border-radius:10px;z-index:5}
+  #topRight{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:5}
+  .pill{pointer-events:auto;background:rgba(255,255,255,.12);color:#fff;border-radius:999px;
+    padding:8px 12px;font-family:monospace;font-size:12px}
+  #minimap{position:fixed;right:10px;bottom:10px;width:120px;height:120px;border-radius:10px;
+    background:rgba(10,14,20,.8);border:1px solid rgba(255,255,255,.2);z-index:5}
+  #pause{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;
+    justify-content:center;z-index:10}
+  #pause .panel{width:90%;max-width:420px;background:#10141c;color:#fff;border-radius:14px;
+    padding:16px;font-family:system-ui,monospace;border:1px solid rgba(255,255,255,.15)}
+  #pause .row{display:flex;align-items:center;justify-content:space-between;margin:8px 0}
+  #pause button{padding:10px 12px;border-radius:10px;border:none;background:#2c3650;color:#fff}
+  #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
+    background:rgba(20,24,32,.9);color:#fff;font-family:monospace;font-size:12px;
+    padding:8px 12px;border-radius:10px;display:none;z-index:6}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<!-- HUD -->
+<div id="hotbar">
+  <div class="hot active" data-item="bow">Bow</div>
+  <div class="hot" data-item="sword">Sword</div>
+  <div class="hot" data-item="binoculars">🔭</div>
+  <div class="hot" data-item="apple">🍎</div>
+</div>
+
+<div id="uiButtons">
+  <div id="btnLeft" class="btn">◀</div>
+  <div id="btnForward" class="btn">▲</div>
+  <div id="btnRight" class="btn">▶</div>
+  <div id="btnJump" class="btn">⤒</div>
+  <div id="btnAttack" class="btn">⚔</div>
+</div>
+
+<div id="healthBar"><div id="healthFill"></div></div>
+<div id="npcDialog"></div>
+
+<canvas id="minimap"></canvas>
+
+<div id="topRight">
+  <div id="btnPause" class="pill">Pause ▮▮</div>
+  <div id="btnView" class="pill">View: 1st</div>
+  <div id="btnSave" class="pill">Save</div>
+  <div id="btnLoad" class="pill">Load</div>
+</div>
+
+<div id="pause">
+  <div class="panel">
+    <h3 style="margin:0 0 8px 0;">Pause / Settings</h3>
+    <div class="row"><span>Music</span><button id="btnMusic">Toggle</button></div>
+    <div class="row"><span>Time Scale</span>
+      <button id="timeSlower">-</button>
+      <span id="timeScaleLabel">1.0x</span>
+      <button id="timeFaster">+</button>
+    </div>
+    <div class="row"><span>Invert Look</span><button id="invertLook">Off</button></div>
+    <div class="row" style="justify-content:center;margin-top:12px;">
+      <button id="btnResume">Resume</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true, disableWebGL2Support:false });
+  const scene  = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.05,0.07,0.10,1);
+
+  // CAMERA (first person + toggle third)
+  const camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 1.7, 0), scene);
+  camera.minZ = 0.05; camera.inertia = 0;
+  camera.fov = BABYLON.Tools.ToRadians(70);
+  camera.angularSensibility = 5000; // touch
+  camera.attachControl(canvas, true);
+
+  // Player body for 3rd person view
+  const playerRoot = new BABYLON.TransformNode("playerRoot");
+  const playerMesh = BABYLON.MeshBuilder.CreateCapsule("player", { height:1.6, radius:0.35 }, scene);
+  playerMesh.parent = playerRoot;
+  playerMesh.position.y = 0.8;
+  const knightMat = new BABYLON.StandardMaterial("knight", scene);
+  knightMat.diffuseColor = new BABYLON.Color3(0.7,0.7,0.8);
+  playerMesh.material = knightMat;
+  playerMesh.isVisible = false; // start 1st person
+  let thirdPerson = false;
+
+  // LIGHTS + SUN
+  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+  hemi.intensity = 0.45;
+
+  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5,-1,-0.2), scene);
+  sun.intensity = 0.7;
+  const sunSphere = BABYLON.MeshBuilder.CreateSphere("sunS", {diameter:6}, scene);
+  const sunMat = new BABYLON.StandardMaterial("sunM", scene);
+  sunMat.emissiveColor = new BABYLON.Color3(1, .9, .6);
+  sunSphere.material = sunMat; sunSphere.isPickable = false; sunSphere.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+
+  // STARS (particles visible at night)
+  const stars = new BABYLON.ParticleSystem("stars", 1000, scene);
+  stars.particleTexture = new BABYLON.Texture("https://assets.babylonjs.com/particles/flare.png", scene);
+  stars.emitter = new BABYLON.Vector3(0, 60, 0);
+  stars.minEmitBox = new BABYLON.Vector3(-120, 0, -120);
+  stars.maxEmitBox = new BABYLON.Vector3(120, 0, 120);
+  stars.minSize = 0.05; stars.maxSize = 0.08;
+  stars.minLifeTime = 9999; stars.maxLifeTime = 9999;
+  stars.emitRate = 1000; stars.color1 = new BABYLON.Color4(1,1,1,1);
+  stars.color2 = new BABYLON.Color4(0.8,0.8,1,1);
+  stars.direction1 = new BABYLON.Vector3(0,0,0);
+  stars.direction2 = new BABYLON.Vector3(0,0,0);
+  stars.start();
+
+  // UTILS
+  const rnd = (a,b)=>Math.random()*(b-a)+a;
+
+  // TERRAIN (procedural gentle hills)
+  const SIZE = 1200, SUBS = 240;
+  const ground = BABYLON.MeshBuilder.CreateGround("ground", { width:SIZE, height:SIZE, subdivisions:SUBS }, scene);
+  const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  function hill(x,z){
+    // simple layered sines for mobile-safe bumps
+    return Math.sin(x*0.006)*1.2 + Math.cos(z*0.006)*1.2 + Math.sin((x+z)*0.004)*0.8;
+  }
+  for(let i=0;i<positions.length;i+=3){
+    const x=positions[i], z=positions[i+2];
+    positions[i+1] = hill(x,z);
+  }
+  ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+  ground.convertToFlatShadedMesh();
+
+  const groundMat = new BABYLON.StandardMaterial("gMat", scene);
+  const gTex = new BABYLON.DynamicTexture("gTex", {width:128,height:128}, scene, false);
+  const gCtx = gTex.getContext();
+  for(let x=0;x<128;x++){
+    for(let y=0;y<128;y++){
+      const r = Math.random()<0.5 ? 14 : 18;
+      gCtx.fillStyle = `rgb(0,${60+r},0)`;
+      gCtx.fillRect(x,y,1,1);
+    }
+  }
+  gTex.update();
+  groundMat.diffuseTexture = gTex;
+  groundMat.specularColor = new BABYLON.Color3(0,0,0);
+  ground.material = groundMat;
+
+  // SIMPLE NAVMESH BLOCKERS (for houses/trees)
+  const blockers = [];
+
+  // TREES (cone leaves + trunk)
+  function makeTree(x,z){
+    const root = new BABYLON.TransformNode("tree");
+    const trunk = BABYLON.MeshBuilder.CreateCylinder("trunk",{height:2.2,diameter:0.35},scene);
+    trunk.parent = root; trunk.position.y = 1.1;
+    const trunkMat = new BABYLON.StandardMaterial("trunkMat", scene);
+    trunkMat.diffuseColor = new BABYLON.Color3(0.35,0.22,0.08); trunkMat.specularColor = new BABYLON.Color3(0,0,0); trunk.material = trunkMat;
+
+    const leafMat = new BABYLON.StandardMaterial("leafMat",scene);
+    const leafTex = new BABYLON.DynamicTexture("leafTex",16,scene,true);
+    const ctx = leafTex.getContext(); ctx.fillStyle = "#0b8c0b"; ctx.fillRect(0,0,16,16); leafTex.update();
+    leafMat.diffuseTexture = leafTex; leafMat.specularColor = new BABYLON.Color3(0,0,0);
+
+    const c1 = BABYLON.MeshBuilder.CreateCylinder("leaf1",{height:1.6,diameterTop:0,diameterBottom:2.4,tessellation:16},scene);
+    const c2 = BABYLON.MeshBuilder.CreateCylinder("leaf2",{height:1.4,diameterTop:0,diameterBottom:1.9,tessellation:16},scene);
+    const c3 = BABYLON.MeshBuilder.CreateCylinder("leaf3",{height:1.2,diameterTop:0,diameterBottom:1.4,tessellation:16},scene);
+    [c1,c2,c3].forEach((c,i)=>{c.material=leafMat; c.parent=root; c.position.y=2.2+i*0.9;});
+    root.position = new BABYLON.Vector3(x, hill(x, z), z);
+    const s = rnd(0.85,1.4); root.scaling.set(s,s,s);
+    root.rotation.y = rnd(0, Math.PI*2);
+
+    // blocker radius
+    blockers.push({pos:root.position, r:1.2*s});
+    return root;
+  }
+  for(let i=0;i<120;i++){
+    makeTree(rnd(-SIZE*0.45,SIZE*0.45), rnd(-SIZE*0.45,SIZE*0.45));
+  }
+
+  // HOUSES (enterable + simple interior)
+  const houses = [];
+  function makeHouse(x,z){
+    const root = new BABYLON.TransformNode("house");
+    const y = hill(x,z);
+    root.position = new BABYLON.Vector3(x, y, z);
+
+    // body: outer
+    const body = BABYLON.MeshBuilder.CreateBox("houseBody", { height:3, width:4, depth:4 }, scene);
+    body.parent = root; body.position.y = y + 1.5;
+    const hMat = new BABYLON.StandardMaterial("hMat", scene);
+    hMat.diffuseColor = new BABYLON.Color3(0.6,0.45,0.3); body.material = hMat;
+
+    // door opening (boolean subtraction is heavy; instead fake with doorway trigger)
+    const doorTrigger = BABYLON.MeshBuilder.CreateBox("door", {width:1.2, height:2.2, depth:0.2}, scene);
+    doorTrigger.parent = root; doorTrigger.position = new BABYLON.Vector3(0, y+1.1, 2.01); doorTrigger.isVisible = false;
+
+    // roof (pyramid)
+    const roof = BABYLON.MeshBuilder.CreateCylinder("roof",{diameter:4.6,height:1.2,tessellation:4},scene);
+    roof.parent = root; roof.position.y = y + 3.6; roof.rotation.y = Math.PI/4;
+    const rMat = new BABYLON.StandardMaterial("rMat", scene);
+    rMat.diffuseColor = new BABYLON.Color3(0.4,0.1,0.1); roof.material = rMat;
+
+    // interior floor
+    const floor = BABYLON.MeshBuilder.CreateGround("floor",{width:3.6,height:3.6,subdivisions:1},scene);
+    floor.parent = root; floor.position = new BABYLON.Vector3(0, y+0.05, 0);
+    const fMat = new BABYLON.StandardMaterial("fMat", scene);
+    fMat.diffuseColor = new BABYLON.Color3(0.55,0.5,0.45); floor.material = fMat;
+
+    // simple furniture
+    const table = BABYLON.MeshBuilder.CreateBox("table",{width:1.2,depth:0.7,height:0.1},scene);
+    table.parent = root; table.position = new BABYLON.Vector3(0.3,y+0.75,-0.6);
+    const tMat = new BABYLON.StandardMaterial("tMat",scene); tMat.diffuseColor = new BABYLON.Color3(0.45,0.3,0.2); table.material = tMat;
+    const leg = ()=> BABYLON.MeshBuilder.CreateCylinder("leg",{height:0.7,diameter:0.08},scene);
+    [ [-0.5, -0.3], [0.9,-0.3], [-0.5,1.0], [0.9,1.0] ].forEach(([dx,dz])=>{
+      const l=leg(); l.parent = table; l.position.set(dx, -0.35, dz);
+      l.material = tMat;
+    });
+
+    houses.push(root);
+    blockers.push({pos:root.position, r:2.6});
+    return root;
+  }
+  for(let i=0;i<18;i++){
+    makeHouse(rnd(-SIZE*0.35,SIZE*0.35), rnd(-SIZE*0.35,SIZE*0.35));
+  }
+
+  // NPCs
+  const npcs = [];
+  function makeNPC(x,z,name){
+    const y = hill(x,z);
+    const npc = BABYLON.MeshBuilder.CreateBox("npc",{height:1.6,width:0.6,depth:0.4},scene);
+    npc.position = new BABYLON.Vector3(x, y+0.8, z);
+    const mat = new BABYLON.StandardMaterial("npcMat", scene); mat.diffuseColor = new BABYLON.Color3(0.8,0.7,0.3); npc.material = mat;
+    npc.nameText = name; npcs.push(npc); return npc;
+  }
+  for(let i=0;i<12;i++){ makeNPC(rnd(-250,250), rnd(-250,250), "NPC"+i); }
+
+  // Zombies
+  const zombies = [];
+  function makeZombie(x,z){
+    const y = hill(x,z);
+    const zmb = BABYLON.MeshBuilder.CreateBox("zombie",{height:1.6,width:0.6,depth:0.4},scene);
+    zmb.position = new BABYLON.Vector3(x, y+0.8, z);
+    const mat = new BABYLON.StandardMaterial("zMat", scene); mat.diffuseColor = new BABYLON.Color3(0.5,0.1,0.1); zmb.material = mat;
+    zmb.alive = true; zmb.hp = 3;
+    zombies.push(zmb); return zmb;
+  }
+  for(let i=0;i<24;i++){ makeZombie(rnd(-320,320), rnd(-320,320)); }
+
+  // WEAPONS (camera attached)
+  const sword = BABYLON.MeshBuilder.CreateBox("sword",{height:0.9,width:0.07,depth:0.06},scene);
+  sword.parent = camera; sword.position.set(0.38,-0.25,0.9); sword.rotation.set(0.2,-0.6,0);
+  const swordMat = new BABYLON.StandardMaterial("sMat", scene); swordMat.diffuseColor = new BABYLON.Color3(0.8,0.8,0.85); sword.material = swordMat;
+
+  const bow = BABYLON.MeshBuilder.CreateTorus("bow",{diameter:0.7,thickness:0.05,arc:0.5},scene);
+  bow.parent = camera; bow.position.set(0.35,-0.25,0.9); bow.rotation.set(0.2,-0.6,0); bow.isVisible = true;
+
+  const bin = BABYLON.MeshBuilder.CreateBox("bin",{height:0.3,width:0.22,depth:0.12},scene);
+  bin.parent = camera; bin.position.set(0.35,-0.25,0.9); bin.isVisible = false;
+
+  // HOTBAR + INVENTORY
+  let activeItem = "bow";
+  const inventory = { apple: 3 };
+  document.querySelectorAll(".hot").forEach(el=>{
+    el.addEventListener("touchstart", ()=>{
+      activeItem = el.dataset.item;
+      document.querySelectorAll(".hot").forEach(h=>h.classList.remove("active")); el.classList.add("active");
+      sword.isVisible = activeItem==="sword";
+      bow.isVisible = activeItem==="bow";
+      bin.isVisible = activeItem==="binoculars";
+      toast(`Selected: ${activeItem}`);
+    }, {passive:true});
+  });
+
+  // INPUT
+  const input = { left:false, right:false, forward:false, jump:false, attack:false };
+  ['btnLeft','btnRight','btnForward','btnJump','btnAttack'].forEach(id=>{
+    const el = document.getElementById(id);
+    const key = id.replace('btn','').toLowerCase();
+    const on = ()=> input[key] = true;
+    const off= ()=> input[key] = false;
+    el.addEventListener('touchstart', on, {passive:true});
+    el.addEventListener('touchend', off);
+    el.addEventListener('touchcancel', off);
+  });
+
+  // MOVEMENT + PHYSICS (mobile-friendly)
+  const MOVE_SPEED = 6;
+  const ROTATE_SPEED = 2.6;
+  const GRAVITY = -18;
+  const JUMP_VEL = 6.2;
+  let vy = 0;
+  let invertY = false;
+
+  // HEALTH
+  let maxHP = 10, playerHP = 10;
+  const healthFill = document.getElementById("healthFill");
+
+  // ARROWS (object pool)
+  const arrows = [];
+  const maxArrows = 20;
+  for(let i=0;i<maxArrows;i++){
+    const a = BABYLON.MeshBuilder.CreateBox("arrow",{height:0.35,width:0.05,depth:0.05},scene);
+    a.isVisible = false; a.active = false; a.speed = 16; a.direction = new BABYLON.Vector3();
+    arrows.push(a);
+  }
+  function shootArrow(){
+    const a = arrows.find(ar=>!ar.active);
+    if(!a) return;
+    a.position = camera.position.add(camera.getDirection(BABYLON.Axis.Z).scale(1.2));
+    a.direction.copyFrom(camera.getDirection(BABYLON.Axis.Z));
+    a.isVisible = true; a.active = true;
+  }
+
+  // BINOCULARS (zoom)
+  let zoomed = false;
+  function toggleZoom(on){
+    zoomed = on;
+    camera.fov = BABYLON.Tools.ToRadians(on ? 30 : 70);
+  }
+
+  // SWORD swing
+  let swing = 0;
+
+  // NPC dialog
+  const npcDialog = document.getElementById("npcDialog");
+
+  // DAY-NIGHT CYCLE
+  let timeOfDay = 8; // 0-24
+  let timeScale = 1; // 1x by default
+  function updateLighting(dt){
+    timeOfDay = (timeOfDay + dt * (24/120) * timeScale) % 24; // ~120s full day
+    const t = timeOfDay;
+    const isNight = (t<6 || t>18);
+    const k = isNight ? 0 : (t<12 ? (t-6)/6 : (18-t)/6); // 0..1 daylight factor
+    sun.intensity = 0.3 + 0.7*Math.max(0,k);
+    hemi.intensity = 0.2 + 0.6*Math.max(0,k);
+    scene.clearColor = isNight ? new BABYLON.Color4(0.02,0.03,0.07,1) : new BABYLON.Color4(0.15,0.2,0.28,1);
+    stars.manualEmitCount = isNight ? 1000 : 0;
+
+    // position sun on sky dome
+    const angle = (t/24)*Math.PI*2; // wrap
+    const r = 180;
+    const sx = Math.cos(angle)*r, sy = Math.sin(angle)*r*0.6 + 60, sz = -40;
+    sun.direction = new BABYLON.Vector3(-sx,-sy,-sz).normalize();
+    sunSphere.position.set(sx, sy, sz);
+    sunSphere.isVisible = !isNight;
+  }
+
+  // COLLISION helpers
+  function pushBackFromBlockers(pos, step){
+    for(const b of blockers){
+      const dx = pos.x - b.pos.x, dz = pos.z - b.pos.z;
+      const d2 = dx*dx + dz*dz; const r = b.r + 0.6;
+      if(d2 < r*r){
+        const d = Math.max(0.001, Math.sqrt(d2));
+        pos.x = b.pos.x + dx/d * r;
+        pos.z = b.pos.z + dz/d * r;
+      }
+    }
+    // keep in world bounds
+    const half = SIZE*0.49;
+    pos.x = Math.max(-half, Math.min(half, pos.x));
+    pos.z = Math.max(-half, Math.min(half, pos.z));
+    // clamp to terrain height
+    const y = hill(pos.x, pos.z) + 1.7;
+    if(pos.y < y) pos.y = y;
+  }
+
+  // MINIMAP
+  const mini = document.getElementById('minimap');
+  const mctx = mini.getContext('2d');
+
+  function drawMinimap(){
+    const w = mini.width, h = mini.height;
+    mctx.clearRect(0,0,w,h);
+    // background grid
+    mctx.fillStyle = "#0f1320"; mctx.fillRect(0,0,w,h);
+
+    const scale = 120/SIZE; // world to minimap
+    function worldToMini(x,z){
+      return {
+        x: w*0.5 + x*scale,
+        y: h*0.5 + z*scale
+      };
+    }
+
+    // houses
+    mctx.fillStyle = "#b58d4a";
+    houses.forEach(hh=>{
+      const p = worldToMini(hh.position.x, hh.position.z);
+      mctx.fillRect(p.x-2,p.y-2,4,4);
+    });
+
+    // zombies
+    mctx.fillStyle = "#c94c4c";
+    zombies.forEach(z=>{
+      if(!z.alive) return;
+      const p = worldToMini(z.position.x, z.position.z);
+      mctx.fillRect(p.x-1,p.y-1,2,2);
+    });
+
+    // player
+    const p = worldToMini(camera.position.x, camera.position.z);
+    mctx.fillStyle = "#7ec8ff";
+    mctx.beginPath(); mctx.arc(p.x, p.y, 3, 0, Math.PI*2); mctx.fill();
+  }
+
+  // UI buttons top-right
+  const btnPause = document.getElementById('btnPause');
+  const btnView  = document.getElementById('btnView');
+  const btnSave  = document.getElementById('btnSave');
+  const btnLoad  = document.getElementById('btnLoad');
+  const pauseLayer = document.getElementById('pause');
+  const btnResume = document.getElementById('btnResume');
+  const btnMusic = document.getElementById('btnMusic');
+  const invertLookBtn = document.getElementById('invertLook');
+  const timeSlower = document.getElementById('timeSlower');
+  const timeFaster = document.getElementById('timeFaster');
+  const timeScaleLabel = document.getElementById('timeScaleLabel');
+
+  function setPaused(p){
+    pauseLayer.style.display = p ? "flex" : "none";
+  }
+
+  btnPause.onclick = ()=> setPaused(true);
+  btnResume.onclick = ()=> setPaused(false);
+
+  btnView.onclick = ()=>{
+    thirdPerson = !thirdPerson;
+    playerMesh.isVisible = thirdPerson;
+    btnView.textContent = "View: " + (thirdPerson ? "3rd" : "1st");
+    toast(thirdPerson ? "Third-person ON" : "First-person ON");
+  };
+
+  // Simple offline-friendly "music": oscillator (light)
+  let musicOn = false; let audioCtx=null; let osc=null; let gain=null;
+  function toggleMusic(){
+    if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+    if(!musicOn){
+      osc = audioCtx.createOscillator(); gain = audioCtx.createGain();
+      osc.type="sine"; osc.frequency.value = 220; gain.gain.value = 0.02;
+      osc.connect(gain).connect(audioCtx.destination); osc.start();
+      musicOn = true; btnMusic.textContent = "On";
+    }else{
+      try{ osc.stop(); }catch(e){}
+      musicOn = false; btnMusic.textContent = "Off";
+    }
+  }
+  btnMusic.onclick = toggleMusic;
+
+  invertLookBtn.onclick = ()=>{
+    invertY = !invertY;
+    invertLookBtn.textContent = invertY ? "On" : "Off";
+  };
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+
+  timeSlower.onclick = ()=>{ timeScale = clamp(timeScale-0.25, 0.25, 3); timeScaleLabel.textContent = timeScale.toFixed(2)+"x"; };
+  timeFaster.onclick = ()=>{ timeScale = clamp(timeScale+0.25, 0.25, 3); timeScaleLabel.textContent = timeScale.toFixed(2)+"x"; };
+
+  // SAVE/LOAD
+  function saveGame(){
+    const data = {
+      x: camera.position.x, y: camera.position.y, z: camera.position.z,
+      hp: playerHP, tod: timeOfDay, inv: inventory
+    };
+    localStorage.setItem("dfLiteSave", JSON.stringify(data));
+    toast("Game saved.");
+  }
+  function loadGame(){
+    const raw = localStorage.getItem("dfLiteSave");
+    if(!raw){ toast("No save found."); return; }
+    try{
+      const d = JSON.parse(raw);
+      camera.position.set(d.x||0,d.y||1.7,d.z||0);
+      playerHP = d.hp||10; timeOfDay = d.tod||8;
+      Object.assign(inventory, d.inv||{});
+      toast("Save loaded.");
+    }catch(e){
+      toast("Failed to load save.");
+    }
+  }
+  btnSave.onclick = saveGame;
+  btnLoad.onclick = loadGame;
+
+  // SIMPLE TOAST
+  const toastEl = document.getElementById('toast');
+  let toastTimer = null;
+  function toast(msg){
+    toastEl.textContent = msg;
+    toastEl.style.display = 'block';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=> toastEl.style.display='none', 1500);
+  }
+
+  // ATTACK
+  document.getElementById('btnAttack').addEventListener('touchstart', ()=>{
+    if(activeItem==="bow"){ shootArrow(); }
+    else if(activeItem==="sword"){ swing = Math.min(1, swing + 0.7); }
+    else if(activeItem==="apple"){
+      if((inventory.apple|0) > 0 && playerHP < maxHP){
+        inventory.apple--; playerHP = Math.min(maxHP, playerHP + 3);
+        toast(`Ate apple. 🍎 x${inventory.apple}`);
+      }else{
+        toast("No apples or full HP.");
+      }
+    }
+  }, {passive:true});
+
+  // CAMERA LOOK drag (vertical invert option)
+  let dragging = false, lastX=0,lastY=0;
+  canvas.addEventListener('touchstart', (e)=>{ dragging=true; const t=e.touches[0]; lastX=t.clientX; lastY=t.clientY; }, {passive:true});
+  canvas.addEventListener('touchend', ()=> dragging=false);
+  canvas.addEventListener('touchmove', (e)=>{
+    if(!dragging) return;
+    const t=e.touches[0];
+    const dx=t.clientX-lastX, dy=t.clientY-lastY;
+    lastX=t.clientX; lastY=t.clientY;
+    camera.rotation.y += dx * 0.003;
+    camera.rotation.x += (invertY?-1:1) * dy * 0.003;
+    camera.rotation.x = clamp(camera.rotation.x, -Math.PI/2+0.05, Math.PI/2-0.05);
+  }, {passive:true});
+
+  // MAIN LOOP
+  scene.onBeforeRenderObservable.add(()=>{
+    const dt = engine.getDeltaTime()/1000;
+
+    // move (forward only, rotate via left/right — mobile style)
+    if(input.left)  camera.rotation.y -= ROTATE_SPEED*dt;
+    if(input.right) camera.rotation.y += ROTATE_SPEED*dt;
+
+    if(input.forward){
+      const f = camera.getDirection(BABYLON.Axis.Z);
+      camera.position.addInPlace(new BABYLON.Vector3(f.x,0,f.z).normalize().scale(MOVE_SPEED*dt));
+    }
+
+    // gravity + jump
+    const groundY = hill(camera.position.x, camera.position.z) + 1.7; // eye height
+    const onGround = camera.position.y <= groundY + 0.001 && vy <= 0;
+    if(onGround){ camera.position.y = groundY; vy = 0; }
+    if(input.jump && onGround){ vy = JUMP_VEL; }
+    vy += GRAVITY * dt;
+    camera.position.y += vy * dt;
+
+    // basic collisions with trees/houses + world bounds
+    pushBackFromBlockers(camera.position, MOVE_SPEED*dt);
+
+    // 3rd person follow
+    playerRoot.position.copyFrom(camera.position.clone().subtract(new BABYLON.Vector3(0,1.7-0.8,0)));
+    if(thirdPerson){
+      // keep camera behind player
+      const back = camera.getDirection(BABYLON.Axis.Z).scale(-2.2);
+      const desired = playerRoot.position.add(new BABYLON.Vector3(back.x, 1.2, back.z));
+      camera.position.copyFrom(desired);
+      // prevent sinking below terrain
+      const gy = hill(camera.position.x,camera.position.z) + 1.2;
+      if(camera.position.y < gy) camera.position.y = gy;
+    }
+
+    // sword animation (decay)
+    if(activeItem==="sword"){
+      swing = Math.max(0, swing - 3*dt);
+      sword.rotation.x = 0.2 + Math.sin(swing*Math.PI)*0.7;
+      sword.rotation.y = -0.6 + Math.sin(swing*Math.PI)*-0.2;
+    }
+
+    // bow auto (tap handled on touchstart)
+
+    // binocular zoom hold (keep pressed = zoom; we simulate while selected)
+    toggleZoom(activeItem==="binoculars");
+
+    // arrows update & hit detection
+    for(let i=0;i<arrows.length;i++){
+      const a = arrows[i];
+      if(!a.active) continue;
+      a.position.addInPlace(a.direction.scale(a.speed*dt));
+      // hit zombies
+      for(const z of zombies){
+        if(!z.alive) continue;
+        if(BABYLON.Vector3.Distance(a.position, z.position) < 1){
+          z.hp -= 1;
+          if(z.hp<=0){ z.alive=false; z.isVisible=false; }
+          a.active=false; a.isVisible=false; break;
+        }
+      }
+      // despawn far
+      if(a.position.length() > SIZE){ a.active=false; a.isVisible=false; }
+    }
+
+    // zombie AI (chase & bite)
+    for(const z of zombies){
+      if(!z.alive) continue;
+      const dir = camera.position.subtract(z.position); dir.y=0;
+      const dist = Math.max(0.001, dir.length());
+      const nd = dir.scale(1/dist);
+      const speed = 1.8 + (timeOfDay<6||timeOfDay>18?0.6:0); // faster at night
+      z.position.addInPlace(nd.scale(speed*dt));
+      z.position.y = hill(z.position.x, z.position.z)+0.8;
+
+      // sword hit (arc)
+      if(activeItem==="sword" && swing>0.5 && dist<2.6){
+        z.hp -= 2; if(z.hp<=0){ z.alive=false; z.isVisible=false; }
+      }
+
+      // damage player
+      if(dist<1.1){
+        playerHP = Math.max(0, playerHP - 5*dt);
+      }
+    }
+
+    // NPC interaction
+    let interacted=false;
+    for(const npc of npcs){
+      const dist = BABYLON.Vector3.Distance(camera.position, npc.position);
+      if(dist<3 && !interacted){
+        npcDialog.style.display="block";
+        npcDialog.innerText = "Hello, I am "+npc.nameText+"!\nTip: Eat apples (hotbar) to heal.";
+        interacted=true;
+      }
+    }
+    if(!interacted) npcDialog.style.display="none";
+
+    // UI health
+    healthFill.style.width = (playerHP/maxHP*100)+"%";
+
+    // day-night
+    updateLighting(dt);
+
+    // minimap
+    drawMinimap();
+
+    // death + respawn
+    if(playerHP<=0){
+      camera.position.set(0, hill(0,0)+1.7, 0);
+      playerHP = maxHP;
+      toast("You died. Respawned at 0,0.");
+    }
+  });
+
+  // RENDER
+  engine.runRenderLoop(()=> scene.render());
+  window.addEventListener('resize', ()=> engine.resize());
+
+  // INIT state
+  camera.position.set(0, hill(0,0)+1.7, -6);
+
+  // Buttons Save/Load hints (tap to use)
+  toast("Tap hotbar to switch items. Bow⚔️ Sword🔭 Binoculars 🍎 Apple");
+
+})();
+</script>
+</body>
+</html>
